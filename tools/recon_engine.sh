@@ -32,7 +32,49 @@ _bbasm_history_targets() {
         sed 's/#.*//;s/^[[:space:]]*//;s/[[:space:]]*$//;/^$/d' "$LIST_FILE"
     else
         printf '%s\n' "$TARGET"
+    fi | awk '$0 !~ /:/ && $0 !~ /\// && $0 !~ /^[0-9.]+$/'
+}
+
+_bbasm_collect_history() {
+    if [ "${BBASM_SKIP_HISTORICAL:-0}" = "1" ]; then
+        log_warn "Historical collection skipped (BBASM)"
+        return 0
     fi
+    local targets="$RECON_DIR/.historical-hosts.txt"
+    _bbasm_history_targets > "$targets"
+    if [ ! -s "$targets" ]; then
+        log_warn "Historical collection skipped (no domain targets)"
+        return 0
+    fi
+    local budget="${BBASM_HISTORICAL_TIMEOUT:-60}"
+    [[ "$budget" =~ ^[1-9][0-9]{0,2}$ ]] || budget=60
+    [ "$budget" -le 300 ] || budget=300
+    if command -v gau &>/dev/null; then
+        # Require a real timeout binary, not the macOS passthrough function.
+        local limiter
+        limiter="$(type -P timeout || type -P gtimeout || true)"
+        if [ -z "$limiter" ]; then
+            log_warn "Historical collection skipped (GNU timeout unavailable)"
+            return 0
+        fi
+        log_step "Running gau (historical URLs, ${budget}s cap)..."
+        "$limiter" -k 5 "$budget" gau --threads 20 < "$targets" \
+            > "$RECON_DIR/urls/gau.txt" 2>/dev/null || log_warn "gau failed or timed out; keeping partial output"
+    else
+        log_warn "gau not installed — using bounded wayback fallback"
+        local deadline=$((SECONDS + budget)) remaining history_host history_pattern
+        while IFS= read -r history_host; do
+            remaining=$((deadline - SECONDS))
+            [ "$remaining" -gt 0 ] || break
+            history_pattern="*.$history_host/*"
+            [ "$TARGET_TYPE" = "list" ] && history_pattern="$history_host/*"
+            curl --max-time "$remaining" -sG 'https://web.archive.org/cdx/search/cdx' \
+                --data-urlencode "url=$history_pattern" \
+                --data 'output=text&fl=original&collapse=urlkey&limit=5000' 2>/dev/null || true
+        done < "$targets" > "$RECON_DIR/urls/wayback.txt"
+    fi
+    # Input hosts are not URL output; do not include them in urls/all.txt.
+    rm -f "$targets"
 }
 
 GREEN='\033[0;32m'
@@ -394,22 +436,7 @@ echo ""
 log_info "Phase 4: URL Collection"
 
 # GAU - Get All URLs (wayback, commoncrawl, otx, urlscan)
-if command -v gau &>/dev/null; then
-    log_step "Running gau (historical URLs)..."
-    _bbasm_history_targets | gau --threads 20 --o "$RECON_DIR/urls/gau.txt" 2>/dev/null || \
-    _bbasm_history_targets | gau > "$RECON_DIR/urls/gau.txt" 2>/dev/null || true
-    log_done "gau: $(wc -l < "$RECON_DIR/urls/gau.txt" 2>/dev/null || echo 0) URLs"
-else
-    log_warn "gau not installed — using wayback fallback"
-    while IFS= read -r history_host; do
-        history_pattern="*.$history_host/*"
-        [ "$TARGET_TYPE" = "list" ] && history_pattern="$history_host/*"
-        curl -sG 'https://web.archive.org/cdx/search/cdx' \
-            --data-urlencode "url=$history_pattern" \
-            --data 'output=text&fl=original&collapse=urlkey&limit=5000' 2>/dev/null || true
-    done < <(_bbasm_history_targets) > "$RECON_DIR/urls/wayback.txt"
-    log_done "wayback: $(wc -l < "$RECON_DIR/urls/wayback.txt" 2>/dev/null || echo 0) URLs"
-fi
+_bbasm_collect_history
 
 # katana — active crawl on live hosts (5 min cap prevents infinite crawl on
 # content-heavy sites like news/video portals)
