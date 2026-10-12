@@ -49,7 +49,7 @@ mkdir -p "$OUT_DIR"
 . "$SCRIPT_DIR/banner.sh"
 print_banner "Secrets Hunter · Leaked Credentials" "$TARGET" \
     "Scan|trufflehog · noseyparker · gitleaks (whichever is installed)" \
-    "Verify|live-key validation against issuer APIs" \
+    "Verify|disabled by default (BBASM_NO_VERIFY=0 enables)" \
     "Report|findings written to scan-output dir"
 
 log "Findings → $OUT_DIR"
@@ -58,10 +58,12 @@ log "Findings → $OUT_DIR"
 _run_trufflehog() {
   local target="$1" subcmd="$2"
   log "trufflehog $subcmd $target"
-  trufflehog "$subcmd" "$target" --json --no-update --only-verified 2>/dev/null \
+  local verify_args=(--only-verified)
+  [ "${BBASM_NO_VERIFY:-1}" = "1" ] && verify_args=(--no-verification)
+  trufflehog "$subcmd" "$target" --json --no-update "${verify_args[@]}" 2>/dev/null \
     > "$OUT_DIR/trufflehog.jsonl" || true
   local n; n=$(wc -l < "$OUT_DIR/trufflehog.jsonl" | tr -d ' ')
-  [ "$n" -gt 0 ] && hit "trufflehog: $n verified secret(s)" || ok "trufflehog: clean"
+  [ "$n" -gt 0 ] && hit "trufflehog: $n secret candidate(s)" || ok "trufflehog: clean"
 }
 
 _run_noseyparker() {

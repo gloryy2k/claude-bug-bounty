@@ -7,6 +7,34 @@
 
 set -uo pipefail
 
+# Safe defaults; setting an individual toggle to 0 restores tool behavior.
+_bbasm_tool_args() {
+    BBASM_HTTPX_ARGS=()
+    BBASM_KATANA_ARGS=()
+    BBASM_NUCLEI_ARGS=()
+    if [ "${BBASM_NO_REDIRECT:-1}" = "1" ]; then
+        BBASM_KATANA_ARGS+=(-disable-redirects)
+    else
+        BBASM_HTTPX_ARGS+=(-follow-redirects)
+    fi
+    if [ "${BBASM_SCOPE_CRAWL:-1}" = "1" ]; then
+        BBASM_KATANA_ARGS+=(-field-scope fqdn)
+    fi
+    if [ "${BBASM_NO_INTERACTSH:-1}" = "1" ]; then
+        BBASM_NUCLEI_ARGS+=(-no-interactsh)
+    fi
+}
+_bbasm_tool_args
+
+# List basename is an output label, never a historical-query target.
+_bbasm_history_targets() {
+    if [ "${TARGET_TYPE:-}" = "list" ]; then
+        sed 's/#.*//;s/^[[:space:]]*//;s/[[:space:]]*$//;/^$/d' "$LIST_FILE"
+    else
+        printf '%s\n' "$TARGET"
+    fi
+}
+
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
@@ -302,7 +330,7 @@ elif [ -x "$HTTPX_BIN" ] && [ -s "$RECON_DIR/subdomains/all.txt" ]; then
         -title \
         -tech-detect \
         -content-length \
-        -follow-redirects \
+        ${BBASM_HTTPX_ARGS[@]+"${BBASM_HTTPX_ARGS[@]}"} \
         -threads "$THREADS" \
         -rate-limit "$RATE_LIMIT" \
         ${BB_AUTH_ARGS[@]+"${BB_AUTH_ARGS[@]}"} \
@@ -368,13 +396,18 @@ log_info "Phase 4: URL Collection"
 # GAU - Get All URLs (wayback, commoncrawl, otx, urlscan)
 if command -v gau &>/dev/null; then
     log_step "Running gau (historical URLs)..."
-    echo "$TARGET" | gau --threads 20 --o "$RECON_DIR/urls/gau.txt" 2>/dev/null || \
-    echo "$TARGET" | gau > "$RECON_DIR/urls/gau.txt" 2>/dev/null || true
+    _bbasm_history_targets | gau --threads 20 --o "$RECON_DIR/urls/gau.txt" 2>/dev/null || \
+    _bbasm_history_targets | gau > "$RECON_DIR/urls/gau.txt" 2>/dev/null || true
     log_done "gau: $(wc -l < "$RECON_DIR/urls/gau.txt" 2>/dev/null || echo 0) URLs"
 else
     log_warn "gau not installed — using wayback fallback"
-    curl -s "https://web.archive.org/cdx/search/cdx?url=*.$TARGET/*&output=text&fl=original&collapse=urlkey&limit=5000" \
-        > "$RECON_DIR/urls/wayback.txt" 2>/dev/null || true
+    while IFS= read -r history_host; do
+        history_pattern="*.$history_host/*"
+        [ "$TARGET_TYPE" = "list" ] && history_pattern="$history_host/*"
+        curl -sG 'https://web.archive.org/cdx/search/cdx' \
+            --data-urlencode "url=$history_pattern" \
+            --data 'output=text&fl=original&collapse=urlkey&limit=5000' 2>/dev/null || true
+    done < <(_bbasm_history_targets) > "$RECON_DIR/urls/wayback.txt"
     log_done "wayback: $(wc -l < "$RECON_DIR/urls/wayback.txt" 2>/dev/null || echo 0) URLs"
 fi
 
@@ -384,6 +417,7 @@ if [ "${BBASM_SKIP_ACTIVE_CRAWL:-0}" != "1" ] && command -v katana &>/dev/null &
     log_step "Running katana (active crawl, 5min cap, top 50 hosts)..."
     head -50 "$RECON_DIR/live/urls.txt" > "$RECON_DIR/urls/katana_targets.txt"
     timeout 300 katana \
+        ${BBASM_KATANA_ARGS[@]+"${BBASM_KATANA_ARGS[@]}"} \
         -list "$RECON_DIR/urls/katana_targets.txt" \
         -d 3 -jc -kf all -silent \
         -c 50 -p 20 \
@@ -633,6 +667,7 @@ elif command -v nuclei &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
     NUC_BS="${NUC_BULK_SIZE:-50}"
 
     timeout "$NUC_TIMEOUT" nuclei \
+        ${BBASM_NUCLEI_ARGS[@]+"${BBASM_NUCLEI_ARGS[@]}"} \
         -l "$NUCLEI_OUT/targets.txt" \
         -severity "$NUC_SEV" \
         -rl "$NUC_RL" \
