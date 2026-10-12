@@ -184,7 +184,7 @@ _detect_dns_wildcard() {
 EOF
     fi
 }
-if [ "${TARGET_TYPE:-domain}" = "domain" ]; then
+if [ "${BBASM_SKIP_HTTPX:-0}" != "1" ] && [ "${TARGET_TYPE:-domain}" = "domain" ]; then
     _detect_dns_wildcard "$TARGET"
 fi
 
@@ -211,7 +211,7 @@ if [ "$TARGET_TYPE" = "list" ]; then
     SCOPE_LOCK=1
 elif [ "$TARGET_TYPE" = "cidr" ]; then
     log_info "CIDR target — running nmap ping sweep to discover live hosts"
-    if command -v nmap &>/dev/null; then
+    if [ "${BBASM_SKIP_NMAP:-0}" != "1" ] && command -v nmap &>/dev/null; then
         nmap -sn "$TARGET" -oG - 2>/dev/null \
             | awk '/Up$/{print $2}' \
             > "$RECON_DIR/subdomains/all.txt" || true
@@ -292,7 +292,9 @@ fi  # end of domain-only subdomain enum block
 echo ""
 log_info "Phase 2: HTTP Probing"
 
-if [ -x "$HTTPX_BIN" ] && [ -s "$RECON_DIR/subdomains/all.txt" ]; then
+if [ "${BBASM_SKIP_HTTPX:-0}" = "1" ]; then
+    log_warn "httpx and DNS checks skipped (BBASM)"
+elif [ -x "$HTTPX_BIN" ] && [ -s "$RECON_DIR/subdomains/all.txt" ]; then
     log_step "Probing with httpx (status, title, tech, content-length)..."
     "$HTTPX_BIN" -l "$RECON_DIR/subdomains/all.txt" \
         -silent \
@@ -332,9 +334,18 @@ fi
 echo ""
 log_info "Phase 3: Port Scanning"
 
-if command -v nmap &>/dev/null; then
+if [ "${BBASM_SKIP_NMAP:-0}" = "1" ]; then
+    log_warn "nmap skipped (BBASM)"
+elif command -v nmap &>/dev/null; then
     log_step "Running nmap (top 1000 ports) on $TARGET..."
-    nmap -sV --top-ports 1000 -T4 --open "$TARGET" \
+    BBASM_NMAP_ARGS=()
+    [ "${BBASM_NMAP_CONNECT:-0}" = "1" ] && BBASM_NMAP_ARGS+=(-sT)
+    if [ "${BBASM_MANAGED:-0}" = "1" ] && [ "$TARGET_TYPE" = "list" ]; then
+        BBASM_NMAP_ARGS+=(-iL "$LIST_FILE")
+    else
+        BBASM_NMAP_ARGS+=("$TARGET")
+    fi
+    nmap -sV --top-ports 1000 -T4 --open "${BBASM_NMAP_ARGS[@]}" \
         -oN "$RECON_DIR/ports/nmap_results.txt" \
         -oG "$RECON_DIR/ports/nmap_greppable.txt" 2>/dev/null || true
     log_done "Nmap scan complete"
@@ -369,7 +380,7 @@ fi
 
 # katana — active crawl on live hosts (5 min cap prevents infinite crawl on
 # content-heavy sites like news/video portals)
-if command -v katana &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
+if [ "${BBASM_SKIP_ACTIVE_CRAWL:-0}" != "1" ] && command -v katana &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
     log_step "Running katana (active crawl, 5min cap, top 50 hosts)..."
     head -50 "$RECON_DIR/live/urls.txt" > "$RECON_DIR/urls/katana_targets.txt"
     timeout 300 katana \
@@ -411,7 +422,7 @@ fi
 echo ""
 log_info "Phase 5: JavaScript Analysis"
 
-if [ -s "$RECON_DIR/urls/js_files.txt" ]; then
+if [ "${BBASM_SKIP_ACTIVE_CRAWL:-0}" != "1" ] && [ -s "$RECON_DIR/urls/js_files.txt" ]; then
     log_step "Extracting endpoints from JS files (top 50)..."
     mkdir -p "$RECON_DIR/js"
 
@@ -449,7 +460,7 @@ log_info "Phase 6: Directory Fuzzing"
 WORDLIST_DIR="$BASE_DIR/wordlists"
 LEGACY_WORDLIST_DIR="$BASE_DIR/tools/wordlists"
 
-if command -v ffuf &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
+if [ "${BBASM_SKIP_ACTIVE_CRAWL:-0}" != "1" ] && [ "${BBASM_SKIP_FFUF:-0}" != "1" ] && command -v ffuf &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
     # Select wordlist
     WORDLIST=""
     if [ -f "$WORDLIST_DIR/common.txt" ]; then
@@ -499,7 +510,7 @@ fi
 echo ""
 log_info "Phase 6.5: Config File Exposure Check"
 
-if [ -s "$RECON_DIR/live/urls.txt" ]; then
+if [ "${BBASM_SKIP_ACTIVE_CRAWL:-0}" != "1" ] && [ -s "$RECON_DIR/live/urls.txt" ]; then
     log_step "Checking for exposed config files (env.js, app_env.js, .env, etc.)..."
     CONFIG_PATHS=(
         "/env.js"
@@ -544,7 +555,7 @@ fi
 echo ""
 log_info "Phase 7: Parameter Discovery"
 
-if [ -s "$RECON_DIR/urls/with_params.txt" ]; then
+if [ "${BBASM_SKIP_ACTIVE_CRAWL:-0}" != "1" ] && [ -s "$RECON_DIR/urls/with_params.txt" ]; then
     log_step "Extracting parameters from collected URLs..."
 
     # Extract parameter names (macOS compatible - no grep -P)
@@ -585,7 +596,7 @@ done
 # Deduplicate and limit to 5
 GITHUB_ORGS=$(echo "$GITHUB_ORGS" | tr ' ' '\n' | grep -v '^$' | sort -u | head -5)
 
-if [ -n "$GITHUB_ORGS" ] && [ -x "$CICD_SCANNER" ] && command -v sisakulint &>/dev/null; then
+if [ "${BBASM_SKIP_ACTIVE_CRAWL:-0}" != "1" ] && [ "${BBASM_SKIP_CICD:-0}" != "1" ] && [ -n "$GITHUB_ORGS" ] && [ -x "$CICD_SCANNER" ] && command -v sisakulint &>/dev/null; then
     for ORG in $GITHUB_ORGS; do
         log_info "CI/CD scan: org:$ORG"
         bash "$CICD_SCANNER" "org:$ORG" --output-dir "$RECON_DIR/cicd/$ORG/" || true
@@ -604,11 +615,14 @@ fi
 echo ""
 log_info "Phase 9: Nuclei Vulnerability Sweep"
 
-if command -v nuclei &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
+if [ "${BBASM_SKIP_NUCLEI:-0}" = "1" ]; then
+    log_warn "nuclei skipped (BBASM)"
+elif command -v nuclei &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
     NUCLEI_OUT="$RECON_DIR/nuclei"
     mkdir -p "$NUCLEI_OUT"
     NUC_LIMIT=$([ "$QUICK_MODE" = "--quick" ] && echo 50 || echo 200)
     NUC_SEV=$([ "$QUICK_MODE" = "--quick" ] && echo "high,critical" || echo "medium,high,critical")
+    NUC_SEV="${BBASM_NUC_SEV:-$NUC_SEV}"
     NUC_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 600 || echo 1800)
 
     head -"$NUC_LIMIT" "$RECON_DIR/live/urls.txt" > "$NUCLEI_OUT/targets.txt"
@@ -651,7 +665,7 @@ fi
 echo ""
 log_info "Phase 10: Subdomain Takeover Quick-Check"
 
-if command -v dig &>/dev/null && [ -s "$RECON_DIR/subdomains/all.txt" ]; then
+if [ "${BBASM_SKIP_HTTPX:-0}" != "1" ] && command -v dig &>/dev/null && [ -s "$RECON_DIR/subdomains/all.txt" ]; then
     TAKEOVER_OUT="$RECON_DIR/takeover_candidates.txt"
     : > "$TAKEOVER_OUT"
     SUB_LIMIT=$([ "$QUICK_MODE" = "--quick" ] && echo 100 || echo 500)
