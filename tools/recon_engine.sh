@@ -420,10 +420,13 @@ elif command -v nmap &>/dev/null; then
         -oG "$RECON_DIR/ports/nmap_greppable.txt" 2>/dev/null || true
     log_done "Nmap scan complete"
 
-    # Extract open ports (macOS compatible - no grep -P)
-    grep "open" "$RECON_DIR/ports/nmap_greppable.txt" 2>/dev/null \
-        | sed -nE 's/.*[^0-9]([0-9]+)\/open.*/\1\/open/p' \
-        | sort -u > "$RECON_DIR/ports/open_ports.txt" 2>/dev/null || true
+    # Extract open ports (macOS compatible - no grep -P). One greppable line can list several open ports
+    # ("Ports: 80/open/tcp//.../, 443/open/tcp//.../"); the previous `sed 's/.*(...).../ '` was greedy and kept
+    # only the LAST port of each line (BBASM's results.py reads nmap_greppable.txt directly to work around this —
+    # see NOTES.md FN2 — but this file is still shown in Phase 3's own summary below). `grep -oE` returns every
+    # non-overlapping match on its own line, so every port a line lists is kept.
+    grep -oE '[0-9]+/open' "$RECON_DIR/ports/nmap_greppable.txt" 2>/dev/null \
+        | sort -t/ -k1,1n -u > "$RECON_DIR/ports/open_ports.txt" 2>/dev/null || true
     log_done "Open ports: $(wc -l < "$RECON_DIR/ports/open_ports.txt" 2>/dev/null || echo 0)"
 else
     log_warn "nmap not installed — skipping"
