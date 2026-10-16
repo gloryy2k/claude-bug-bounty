@@ -686,13 +686,20 @@ elif command -v nuclei &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
     NUC_SEV="${BBASM_NUC_SEV:-$NUC_SEV}"
     NUC_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 600 || echo 1800)
 
+    NUC_LIVE=$(wc -l < "$RECON_DIR/live/urls.txt" | tr -d ' ')
     head -"$NUC_LIMIT" "$RECON_DIR/live/urls.txt" > "$NUCLEI_OUT/targets.txt"
-    log_step "nuclei on $(wc -l < "$NUCLEI_OUT/targets.txt" | tr -d ' ') hosts (severity=$NUC_SEV, timeout=${NUC_TIMEOUT}s)..."
+    NUC_GIVEN=$(wc -l < "$NUCLEI_OUT/targets.txt" | tr -d ' ')
+    log_step "nuclei on $NUC_GIVEN hosts (severity=$NUC_SEV, timeout=${NUC_TIMEOUT}s)..."
+    [ "$NUC_GIVEN" -lt "$NUC_LIVE" ] && log_warn "nuclei: only $NUC_GIVEN of $NUC_LIVE live URLs were given (per-run limit $NUC_LIMIT); the rest were not scanned"
 
     NUC_RL="${NUC_RATE_LIMIT:-300}"
     NUC_C="${NUC_CONCURRENCY:-50}"
     NUC_BS="${NUC_BULK_SIZE:-50}"
 
+    # -stats-json: nuclei's own running count of templates/requests/hosts/matches, written as JSONL to stderr every
+    # -si seconds and once more when the run ends. BBASM used to throw this away with `2>/dev/null`, leaving only
+    # "14,036 templates installed" (snapshot.py, taken at launch) to describe what a scan actually ran. findings.jsonl
+    # (via -o) stays the only source for findings; stats.jsonl below is read-only telemetry.
     timeout "$NUC_TIMEOUT" nuclei \
         ${BBASM_NUCLEI_ARGS[@]+"${BBASM_NUCLEI_ARGS[@]}"} \
         -l "$NUCLEI_OUT/targets.txt" \
@@ -701,10 +708,22 @@ elif command -v nuclei &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
         -c "$NUC_C" \
         -bs "$NUC_BS" \
         -silent \
-        -stats \
+        -stats -stats-json \
         ${BB_AUTH_ARGS[@]+"${BB_AUTH_ARGS[@]}"} \
         -jsonl \
-        -o "$NUCLEI_OUT/findings.jsonl" 2>/dev/null || true
+        -o "$NUCLEI_OUT/findings.jsonl" 2>"$NUCLEI_OUT/stats.jsonl"
+    NUC_EXIT=$?
+    [ "$NUC_EXIT" = 124 ] && log_warn "nuclei: stopped after ${NUC_TIMEOUT}s (timeout) — the stats and findings below are PARTIAL"
+
+    # One small, stable file so BBASM can report real coverage without parsing stats.jsonl itself: how many live
+    # URLs existed vs. how many were actually handed to nuclei (the 50/200 cap truncates silently otherwise), and
+    # nuclei's own last stats-json line (null if nuclei produced none, e.g. it failed before the first interval).
+    NUC_LAST="$(tail -n1 "$NUCLEI_OUT/stats.jsonl" 2>/dev/null)"
+    printf '{"live_urls":%s,"given_urls":%s,"limit":%s,"quick":%s,"timed_out":%s,"last_stats":%s}\n' \
+        "$NUC_LIVE" "$NUC_GIVEN" "$NUC_LIMIT" \
+        "$([ "$QUICK_MODE" = "--quick" ] && echo true || echo false)" \
+        "$([ "$NUC_EXIT" = 124 ] && echo true || echo false)" \
+        "${NUC_LAST:-null}" > "$NUCLEI_OUT/coverage.json"
 
     if [ -s "$NUCLEI_OUT/findings.jsonl" ]; then
         # Severity buckets for human review
