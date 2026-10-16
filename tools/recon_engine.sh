@@ -744,6 +744,10 @@ elif command -v nuclei &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
             n=$(wc -l < "$NUCLEI_OUT/${sev}.jsonl" 2>/dev/null | tr -d ' ')
             [ "$n" -gt 0 ] && log_done "nuclei $sev: $n"
         done
+    elif [ "$NUC_FAILED" = true ]; then
+        # V162_HOST_AUDIT.md note: "[DONE] nuclei: no findings" after the exit-code warning above read as nuclei
+        # having run cleanly. It did not — say so here too, not just in coverage.json.
+        log_warn "nuclei: failed (exit $NUC_EXIT), not a clean \"no findings\" run — see the warning above"
     else
         log_done "nuclei: no findings"
     fi
