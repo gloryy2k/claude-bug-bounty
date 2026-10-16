@@ -714,15 +714,26 @@ elif command -v nuclei &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
         -o "$NUCLEI_OUT/findings.jsonl" 2>"$NUCLEI_OUT/stats.jsonl"
     NUC_EXIT=$?
     [ "$NUC_EXIT" = 124 ] && log_warn "nuclei: stopped after ${NUC_TIMEOUT}s (timeout) — the stats and findings below are PARTIAL"
+    if [ "$NUC_EXIT" != 0 ] && [ "$NUC_EXIT" != 124 ]; then
+        NUC_FAILED=true
+        log_warn "nuclei: exited with code $NUC_EXIT (not a clean 'no findings' run) — see nuclei/stats.jsonl for its own message"
+    else
+        NUC_FAILED=false
+    fi
 
     # One small, stable file so BBASM can report real coverage without parsing stats.jsonl itself: how many live
     # URLs existed vs. how many were actually handed to nuclei (the 50/200 cap truncates silently otherwise), and
     # nuclei's own last stats-json line (null if nuclei produced none, e.g. it failed before the first interval).
-    NUC_LAST="$(tail -n1 "$NUCLEI_OUT/stats.jsonl" 2>/dev/null)"
-    printf '{"live_urls":%s,"given_urls":%s,"limit":%s,"quick":%s,"timed_out":%s,"last_stats":%s}\n' \
+    # v1.6.2 (V161_HOST_AUDIT.md "P2 coverage.json hỏng"): nuclei can print a non-JSON line (e.g. "[FTL] Could not
+    # run nuclei: ...") to the SAME stderr this redirects to stats.jsonl, after its last stats-json tick; a plain
+    # `tail -n1` then grabbed that error text and broke the whole coverage.json. Only a line shaped like a JSON
+    # object is ever used as last_stats now; `failed` tells a real nuclei error apart from "ran, 0 findings".
+    NUC_LAST="$(grep -E '^\{.*\}$' "$NUCLEI_OUT/stats.jsonl" 2>/dev/null | tail -n1)"
+    printf '{"live_urls":%s,"given_urls":%s,"limit":%s,"quick":%s,"timed_out":%s,"failed":%s,"last_stats":%s}\n' \
         "$NUC_LIVE" "$NUC_GIVEN" "$NUC_LIMIT" \
         "$([ "$QUICK_MODE" = "--quick" ] && echo true || echo false)" \
         "$([ "$NUC_EXIT" = 124 ] && echo true || echo false)" \
+        "$NUC_FAILED" \
         "${NUC_LAST:-null}" > "$NUCLEI_OUT/coverage.json"
 
     if [ -s "$NUCLEI_OUT/findings.jsonl" ]; then
