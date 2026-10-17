@@ -684,16 +684,20 @@ if [ "${BBASM_SKIP_NUCLEI:-0}" = "1" ]; then
 elif command -v nuclei &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
     NUCLEI_OUT="$RECON_DIR/nuclei"
     mkdir -p "$NUCLEI_OUT"
-    NUC_LIMIT=$([ "$QUICK_MODE" = "--quick" ] && echo 50 || echo 200)
     NUC_SEV=$([ "$QUICK_MODE" = "--quick" ] && echo "high,critical" || echo "medium,high,critical")
     NUC_SEV="${BBASM_NUC_SEV:-$NUC_SEV}"
-    NUC_TIMEOUT=$([ "$QUICK_MODE" = "--quick" ] && echo 600 || echo 1800)
+    # Product decision (2026-10-17, "D1"): every live URL gets nuclei, no per-run cap. The old head -50/-200
+    # silently dropped the rest of a scan's live URLs; the real safety net is BBASM's own per-command budget
+    # (JobRunner caps this whole deep-stage command to what is left of the scan's overall timeout and reports
+    # "Chạy dở dang" if it is cut) -- an inner timeout that trips earlier than that just hid time the user already
+    # budgeted for the scan. NUC_TIMEOUT below is only a generous local backstop for when this script runs outside
+    # that supervision (manual testing); BBASM overrides it with BBASM_NUCLEI_TIMEOUT (ScanConfig.nuclei_timeout).
+    NUC_TIMEOUT="${BBASM_NUCLEI_TIMEOUT:-$([ "$QUICK_MODE" = "--quick" ] && echo 3600 || echo 7200)}"
 
     NUC_LIVE=$(wc -l < "$RECON_DIR/live/urls.txt" | tr -d ' ')
-    head -"$NUC_LIMIT" "$RECON_DIR/live/urls.txt" > "$NUCLEI_OUT/targets.txt"
+    cp "$RECON_DIR/live/urls.txt" "$NUCLEI_OUT/targets.txt"
     NUC_GIVEN=$(wc -l < "$NUCLEI_OUT/targets.txt" | tr -d ' ')
     log_step "nuclei on $NUC_GIVEN hosts (severity=$NUC_SEV, timeout=${NUC_TIMEOUT}s)..."
-    [ "$NUC_GIVEN" -lt "$NUC_LIVE" ] && log_warn "nuclei: only $NUC_GIVEN of $NUC_LIVE live URLs were given (per-run limit $NUC_LIMIT); the rest were not scanned"
 
     NUC_RL="${NUC_RATE_LIMIT:-300}"
     NUC_C="${NUC_CONCURRENCY:-50}"
@@ -725,15 +729,16 @@ elif command -v nuclei &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
     fi
 
     # One small, stable file so BBASM can report real coverage without parsing stats.jsonl itself: how many live
-    # URLs existed vs. how many were actually handed to nuclei (the 50/200 cap truncates silently otherwise), and
-    # nuclei's own last stats-json line (null if nuclei produced none, e.g. it failed before the first interval).
+    # URLs existed vs. how many were actually handed to nuclei (no per-run cap since 2026-10-17 -- "limit":0 --
+    # so the two should always be equal; kept so old scans with a real cap still read correctly), and nuclei's own
+    # last stats-json line (null if nuclei produced none, e.g. it failed before the first interval).
     # v1.6.2 (V161_HOST_AUDIT.md "P2 coverage.json hỏng"): nuclei can print a non-JSON line (e.g. "[FTL] Could not
     # run nuclei: ...") to the SAME stderr this redirects to stats.jsonl, after its last stats-json tick; a plain
     # `tail -n1` then grabbed that error text and broke the whole coverage.json. Only a line shaped like a JSON
     # object is ever used as last_stats now; `failed` tells a real nuclei error apart from "ran, 0 findings".
     NUC_LAST="$(grep -E '^\{.*\}$' "$NUCLEI_OUT/stats.jsonl" 2>/dev/null | tail -n1)"
-    printf '{"live_urls":%s,"given_urls":%s,"limit":%s,"quick":%s,"timed_out":%s,"failed":%s,"last_stats":%s}\n' \
-        "$NUC_LIVE" "$NUC_GIVEN" "$NUC_LIMIT" \
+    printf '{"live_urls":%s,"given_urls":%s,"limit":0,"quick":%s,"timed_out":%s,"failed":%s,"last_stats":%s}\n' \
+        "$NUC_LIVE" "$NUC_GIVEN" \
         "$([ "$QUICK_MODE" = "--quick" ] && echo true || echo false)" \
         "$([ "$NUC_EXIT" = 124 ] && echo true || echo false)" \
         "$NUC_FAILED" \
