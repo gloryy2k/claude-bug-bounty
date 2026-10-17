@@ -756,6 +756,11 @@ elif command -v nuclei &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
         # V162_HOST_AUDIT.md note: "[DONE] nuclei: no findings" after the exit-code warning above read as nuclei
         # having run cleanly. It did not — say so here too, not just in coverage.json.
         log_warn "nuclei: failed (exit $NUC_EXIT), not a clean \"no findings\" run — see the warning above"
+    elif [ "$NUC_EXIT" = 124 ]; then
+        # V168_HOST_AUDIT.md P2: same problem for a timeout -- "[DONE] no findings" right after the "stopped after
+        # Ns (timeout) ... PARTIAL" warning above read as a finished, clean run with zero matches, when it was cut
+        # short with most of the target list never reached.
+        log_warn "nuclei: no findings in the part it got through before the timeout above — not a finished run"
     else
         log_done "nuclei: no findings"
     fi
