@@ -512,13 +512,17 @@ echo ""
 log_info "Phase 5: JavaScript Analysis"
 
 if [ "${BBASM_SKIP_ACTIVE_CRAWL:-0}" != "1" ] && [ -s "$RECON_DIR/urls/js_files.txt" ]; then
-    log_step "Extracting endpoints from JS files (top 50)..."
+    log_step "Extracting endpoints from JS files..."
     mkdir -p "$RECON_DIR/js"
     # js_files.txt is grepped out of urls/all.txt, which also carries gau/wayback (historical, not host-verified)
     # results -- a URL for a host nobody declared in scope can end up in there. Fetch only from this recon's own
     # enumerated hosts (subdomains/all.txt), same list every other phase here already treats as the real scope.
+    # Same "D1" rule as nuclei/ffuf/katana (2026-10-18): no artificial head -50 cap on top of the scope filter --
+    # that hid JS files independently of how many a scan was actually configured to cover, with nothing in the UI
+    # to say so. The scan's own per-command budget (JobRunner caps this whole deep-stage command to what is left
+    # of the scan's overall timeout) is the real safety net.
     JS_URLS="$RECON_DIR/js/.scoped_js_files.txt"
-    _bbasm_filter_in_scope < "$RECON_DIR/urls/js_files.txt" | head -50 > "$JS_URLS"
+    _bbasm_filter_in_scope < "$RECON_DIR/urls/js_files.txt" > "$JS_URLS"
     SKIPPED=$(( $(wc -l < "$RECON_DIR/urls/js_files.txt") - $(wc -l < "$JS_URLS") ))
     [ "$SKIPPED" -gt 0 ] && log_warn "JS analysis: $SKIPPED URL(s) outside this recon's own scope skipped (not fetched)"
 
@@ -630,6 +634,10 @@ if [ "${BBASM_SKIP_ACTIVE_CRAWL:-0}" != "1" ] && [ -s "$RECON_DIR/live/urls.txt"
     mkdir -p "$RECON_DIR/exposure"
     : > "$RECON_DIR/exposure/config_files.txt"
 
+    # Same "D1" rule as nuclei/ffuf/katana/JS-analysis (2026-10-18): check every live host handed to this stage,
+    # no artificial head -30 cap -- that hid hosts independently of how many a scan was actually configured to
+    # cover, with nothing in the UI to say so. The scan's own per-command budget (JobRunner caps this whole
+    # deep-stage command to what is left of the scan's overall timeout) is the real safety net.
     while IFS= read -r base_url; do
         for path in "${CONFIG_PATHS[@]}"; do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 ${BB_AUTH_ARGS[@]+"${BB_AUTH_ARGS[@]}"} "${base_url}${path}" 2>/dev/null || echo "000")
@@ -642,7 +650,7 @@ if [ "${BBASM_SKIP_ACTIVE_CRAWL:-0}" != "1" ] && [ -s "$RECON_DIR/live/urls.txt"
                 fi
             fi
         done
-    done < <(head -30 "$RECON_DIR/live/urls.txt")
+    done < "$RECON_DIR/live/urls.txt"
 
     CONFIG_COUNT=$(wc -l < "$RECON_DIR/exposure/config_files.txt" 2>/dev/null | tr -d ' ')
     [ "$CONFIG_COUNT" -gt 0 ] && log_warn "Exposed config files: $CONFIG_COUNT" || log_done "Config files: clean"
