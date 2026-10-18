@@ -1,0 +1,18 @@
+# Normalize line endings -- these scripts run inside a Linux container; CRLF breaks bash with
+# "$'\r': command not found" the moment a Windows checkout (core.autocrlf=true) touches them.
+* text=auto eol=lf
+
+*.sh    text eol=lf
+*.bash  text eol=lf
+*.py    text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+
+# Binary -- leave alone
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.zip   binary
+*.gz    binary

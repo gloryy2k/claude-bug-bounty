@@ -465,13 +465,15 @@ log_info "Phase 4: URL Collection"
 _bbasm_collect_history
 
 # katana — active crawl on live hosts (5 min cap prevents infinite crawl on
-# content-heavy sites like news/video portals)
+# content-heavy sites like news/video portals). Same "D1" rule as nuclei/ffuf (2026-10-18): crawl every live host
+# handed to this stage, not a hardcoded top-50 -- that cap stayed invisible under the ScanConfig.deep_hosts default
+# of 50 but silently under-crawled as soon as a user raised deep_hosts (up to 200). The stage's own live/urls.txt
+# is already the deep pass's chosen host list; the 5min timeout below remains the real safety net.
 if [ "${BBASM_SKIP_ACTIVE_CRAWL:-0}" != "1" ] && command -v katana &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
-    log_step "Running katana (active crawl, 5min cap, top 50 hosts)..."
-    head -50 "$RECON_DIR/live/urls.txt" > "$RECON_DIR/urls/katana_targets.txt"
+    log_step "Running katana (active crawl, 5min cap)..."
     timeout 300 katana \
         ${BBASM_KATANA_ARGS[@]+"${BBASM_KATANA_ARGS[@]}"} \
-        -list "$RECON_DIR/urls/katana_targets.txt" \
+        -list "$RECON_DIR/live/urls.txt" \
         -d 3 -jc -kf all -silent \
         -c 50 -p 20 \
         ${BB_AUTH_ARGS[@]+"${BB_AUTH_ARGS[@]}"} \
@@ -570,11 +572,16 @@ if [ "${BBASM_SKIP_ACTIVE_CRAWL:-0}" != "1" ] && [ "${BBASM_SKIP_FFUF:-0}" != "1
     fi
 
     if [ -n "$WORDLIST" ]; then
-        # Fuzz top 5 live hosts
+        # Product decision (2026-10-18, same "D1" rule already applied to nuclei): fuzz every live host handed to
+        # this stage, no artificial head -2/-5 cap. The old cap silently skipped most of a deep pass's live hosts
+        # with nothing in the UI to say so, independent of how many hosts the scan was actually configured for
+        # (ScanConfig.deep_hosts). The real safety net is BBASM's own per-command budget (JobRunner caps this
+        # whole deep-stage command to what is left of the scan's overall timeout) plus each host's own -maxtime
+        # (BBASM_FFUF_MAXTIME, applied by the ffuf shim) -- an external host-count cap on top of those only hid
+        # hosts the scan's own budget already paid for.
         FUZZ_COUNT=0
-        MAX_FUZZ=$([ "$QUICK_MODE" = "--quick" ] && echo 2 || echo 5)
-
-        while IFS= read -r url && [ "$FUZZ_COUNT" -lt "$MAX_FUZZ" ]; do
+        while IFS= read -r url; do
+            [ -z "$url" ] && continue
             domain=$(echo "$url" | sed 's|https\?://||;s|[/:].*||')
             log_step "Fuzzing: $url"
             ffuf -u "${url}/FUZZ" \
