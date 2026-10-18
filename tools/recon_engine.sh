@@ -35,6 +35,29 @@ _bbasm_history_targets() {
     fi | awk '$0 !~ /:/ && $0 !~ /\// && $0 !~ /^[0-9.]+$/'
 }
 
+# Keep only URLs (stdin, one per line) whose host is part of this recon's own declared/enumerated scope
+# (subdomains/all.txt). Historical sources (gau/wayback/CDX) occasionally return a URL for an unrelated host --
+# QA reproduced it directly (fake gau returning a 127.0.0.2 URL while the only IN target was a.localhost).
+# Fetching it anyway sends a real request -- carrying the policy-required research-identity header -- to a host
+# nobody authorized testing on. The backend's scope gate only runs at ingest time, after such a fetch already
+# happened; this is the fetch-time gate for every phase here that pulls a URL from a historical/merged list and
+# curls it directly (JS analysis; extend to any future one that does the same).
+_bbasm_filter_in_scope() {
+    local hosts_file="$RECON_DIR/subdomains/all.txt"
+    [ -s "$hosts_file" ] || { cat >/dev/null; return; }  # nothing enumerated (e.g. passive-only) -- fetch nothing rather than guess
+    awk -v hosts="$hosts_file" '
+        BEGIN { while ((getline h < hosts) > 0) { gsub(/\r/, "", h); allowed[tolower(h)] = 1 } }
+        {
+            url = $0; host = url
+            sub(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, "", host)   # strip scheme
+            sub(/^[^@\/]*@/, "", host)                        # strip userinfo
+            sub(/[\/?#].*$/, "", host)                        # strip path/query/fragment
+            sub(/:[0-9]+$/, "", host)                         # strip port
+            if (tolower(host) in allowed) print url
+        }
+    '
+}
+
 _bbasm_collect_history() {
     if [ "${BBASM_SKIP_HISTORICAL:-0}" = "1" ]; then
         log_warn "Historical collection skipped (BBASM)"
@@ -489,23 +512,30 @@ log_info "Phase 5: JavaScript Analysis"
 if [ "${BBASM_SKIP_ACTIVE_CRAWL:-0}" != "1" ] && [ -s "$RECON_DIR/urls/js_files.txt" ]; then
     log_step "Extracting endpoints from JS files (top 50)..."
     mkdir -p "$RECON_DIR/js"
+    # js_files.txt is grepped out of urls/all.txt, which also carries gau/wayback (historical, not host-verified)
+    # results -- a URL for a host nobody declared in scope can end up in there. Fetch only from this recon's own
+    # enumerated hosts (subdomains/all.txt), same list every other phase here already treats as the real scope.
+    JS_URLS="$RECON_DIR/js/.scoped_js_files.txt"
+    _bbasm_filter_in_scope < "$RECON_DIR/urls/js_files.txt" | head -50 > "$JS_URLS"
+    SKIPPED=$(( $(wc -l < "$RECON_DIR/urls/js_files.txt") - $(wc -l < "$JS_URLS") ))
+    [ "$SKIPPED" -gt 0 ] && log_warn "JS analysis: $SKIPPED URL(s) outside this recon's own scope skipped (not fetched)"
 
-    head -50 "$RECON_DIR/urls/js_files.txt" | while IFS= read -r js_url; do
+    while IFS= read -r js_url; do
         curl -s --max-time 10 ${BB_AUTH_ARGS[@]+"${BB_AUTH_ARGS[@]}"} "$js_url" 2>/dev/null | \
             sed -nE 's/.*["'"'"']([a-zA-Z0-9_/.-]*(\/[a-zA-Z0-9_/.-]+)+)["'"'"'].*/\1/p' \
             >> "$RECON_DIR/js/endpoints_raw.txt" 2>/dev/null || true
-    done
+    done < "$JS_URLS"
 
     if [ -f "$RECON_DIR/js/endpoints_raw.txt" ]; then
         sort -u "$RECON_DIR/js/endpoints_raw.txt" > "$RECON_DIR/js/endpoints.txt"
         log_done "JS endpoints: $(wc -l < "$RECON_DIR/js/endpoints.txt" 2>/dev/null || echo 0)"
 
         # Extract potential secrets from JS
-        head -50 "$RECON_DIR/urls/js_files.txt" | while IFS= read -r js_url; do
+        while IFS= read -r js_url; do
             curl -s --max-time 10 ${BB_AUTH_ARGS[@]+"${BB_AUTH_ARGS[@]}"} "$js_url" 2>/dev/null | \
                 grep -oiE '(api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token|client[_-]?secret|password|secret[_-]?key)["\s]*[:=]["\s]*[a-zA-Z0-9_\-]{8,}' \
                 >> "$RECON_DIR/js/potential_secrets.txt" 2>/dev/null || true
-        done
+        done < "$JS_URLS"
         if [ -s "$RECON_DIR/js/potential_secrets.txt" ]; then
             sort -u "$RECON_DIR/js/potential_secrets.txt" -o "$RECON_DIR/js/potential_secrets.txt"
             log_warn "Potential secrets found in JS: $(wc -l < "$RECON_DIR/js/potential_secrets.txt")"
