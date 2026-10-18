@@ -13,6 +13,8 @@
 #   ./tools/secrets_hunter.sh --git <repo-path-or-url>
 #   ./tools/secrets_hunter.sh --js-bundle <recon-dir>     # scans recon/<t>/js/
 #   ./tools/secrets_hunter.sh --github-org <org>          # needs trufflehog+token
+#   --include-paths <file>   git/github-org only: trufflehog reads git history for just the paths in <file>
+#                             (one regex per line, matched against each file's path), not the whole repo.
 # =============================================================================
 
 set -uo pipefail
@@ -27,7 +29,7 @@ warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 hit()  { echo -e "${MAG}[SECRET]${NC} $1"; }
 err()  { echo -e "${RED}[-]${NC} $1" >&2; }
 
-MODE=""; TARGET=""; OUT_DIR="${SECRETS_OUT_DIR:-$(pwd)/findings/secrets/$(date +%Y%m%d_%H%M%S)}"
+MODE=""; TARGET=""; OUT_DIR="${SECRETS_OUT_DIR:-$(pwd)/findings/secrets/$(date +%Y%m%d_%H%M%S)}"; INCLUDE_PATHS=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --filesystem)  MODE="fs";   shift; TARGET="${1:-}" ;;
@@ -35,6 +37,7 @@ while [ "$#" -gt 0 ]; do
     --js-bundle)   MODE="js";   shift; TARGET="${1:-}" ;;
     --github-org)  MODE="ghorg";shift; TARGET="${1:-}" ;;
     --out)         shift; OUT_DIR="${1:-}" ;;
+    --include-paths) shift; INCLUDE_PATHS="${1:-}" ;;
     -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) err "unknown arg: $1"; exit 2 ;;
   esac
@@ -60,7 +63,15 @@ _run_trufflehog() {
   log "trufflehog $subcmd $target"
   local verify_args=(--only-verified)
   [ "${BBASM_NO_VERIFY:-1}" = "1" ] && verify_args=(--no-verification)
-  trufflehog "$subcmd" "$target" --json --no-update "${verify_args[@]}" 2>/dev/null \
+  local scope_args=()
+  # --include-paths only means something for a git history scan (git/github); a plain filesystem/js-bundle scan
+  # has no git history to limit, so an include-paths file for those would be silently ignored at best.
+  if [ -n "${INCLUDE_PATHS:-}" ] && { [ "$subcmd" = git ] || [ "$subcmd" = github ]; }; then
+    scope_args=(--include-paths "$INCLUDE_PATHS")
+    cp "$INCLUDE_PATHS" "$OUT_DIR/include_paths.txt" 2>/dev/null || true
+    log "Limited to paths in $INCLUDE_PATHS"
+  fi
+  trufflehog "$subcmd" "$target" --json --no-update "${verify_args[@]}" "${scope_args[@]}" 2>/dev/null \
     > "$OUT_DIR/trufflehog.jsonl" || true
   local n; n=$(wc -l < "$OUT_DIR/trufflehog.jsonl" | tr -d ' ')
   [ "$n" -gt 0 ] && hit "trufflehog: $n secret candidate(s)" || ok "trufflehog: clean"
