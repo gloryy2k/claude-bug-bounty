@@ -799,45 +799,6 @@ else
 fi
 
 # ============================================================
-# Phase 10: Subdomain takeover quick-check (CNAME fingerprint grep)
-# ============================================================
-echo ""
-log_info "Phase 10: Subdomain Takeover Quick-Check"
-
-if [ "${BBASM_SKIP_HTTPX:-0}" != "1" ] && command -v dig &>/dev/null && [ -s "$RECON_DIR/subdomains/all.txt" ]; then
-    TAKEOVER_OUT="$RECON_DIR/takeover_candidates.txt"
-    : > "$TAKEOVER_OUT"
-    SUB_LIMIT=$([ "$QUICK_MODE" = "--quick" ] && echo 100 || echo 500)
-
-    log_step "Resolving CNAMEs for top $SUB_LIMIT subdomains..."
-    head -"$SUB_LIMIT" "$RECON_DIR/subdomains/all.txt" | while IFS= read -r host; do
-        [ -z "$host" ] && continue
-        cname=$(dig +short "$host" CNAME 2>/dev/null | head -1)
-        [ -z "$cname" ] && continue
-        # Match common claimable-service CNAME suffixes (extend list as needed)
-        case "$cname" in
-            *github.io.*|*herokuapp.com.*|*herokussl.com.*|\
-            *s3.amazonaws.com.*|*s3-website*.amazonaws.com.*|\
-            *azurewebsites.net.*|*cloudapp.net.*|*trafficmanager.net.*|\
-            *shopify.com.*|*myshopify.com.*|\
-            *wordpress.com.*|*ghost.io.*|*tumblr.com.*|\
-            *pantheonsite.io.*|*surge.sh.*|*netlify.app.*|*vercel.app.*|\
-            *zendesk.com.*|*helpjuice.com.*|*helpscout.net.*|*statuspage.io.*|\
-            *fastly.net.*|*readme.io.*|*intercom.help.*)
-                echo "$host  CNAME→ $cname" >> "$TAKEOVER_OUT" ;;
-        esac
-    done
-
-    n=$(wc -l < "$TAKEOVER_OUT" | tr -d ' ')
-    if [ "$n" -gt 0 ]; then
-        log_warn "$n potential takeover candidate(s) — review $TAKEOVER_OUT"
-        log_warn "Confirm with: ./tools/takeover_scanner.sh --recon $RECON_DIR"
-    else
-        log_done "Takeover quick-check: clean"
-    fi
-fi
-
-# ============================================================
 # Summary
 # ============================================================
 echo ""
@@ -867,8 +828,6 @@ echo "  CI/CD findings:   $(find "$RECON_DIR/cicd" -name 'scan_results.txt' -exe
 
 [ -f "$RECON_DIR/nuclei/findings.jsonl" ] && \
 echo "  Nuclei hits:       $(wc -l < "$RECON_DIR/nuclei/findings.jsonl" | tr -d ' ')"
-[ -f "$RECON_DIR/takeover_candidates.txt" ] && \
-echo "  Takeover candidates: $(wc -l < "$RECON_DIR/takeover_candidates.txt" | tr -d ' ')"
 
 echo ""
 echo "  Results: $RECON_DIR/"
