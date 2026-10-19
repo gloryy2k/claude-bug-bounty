@@ -79,6 +79,15 @@ _run_trufflehog() {
 
 _run_noseyparker() {
   local target="$1"
+  # QA-10 (test/qa10-tool-capability-registry@0c23987): unlike trufflehog, noseyparker has no verified
+  # --include-paths-equivalent for a git-history scan in this script -- running it anyway on a repo the
+  # user restricted to specific paths would exceed the scope they declared, the exact failure
+  # ARC_BBP_TRIAGE #1 was meant to close. Fail closed: skip it rather than guess at a flag translation
+  # that isn't confirmed to actually constrain history the same way.
+  if [ -n "${INCLUDE_PATHS:-}" ]; then
+    log "noseyparker skipped: scope is path-restricted (--include-paths) and noseyparker cannot be scoped to it here"
+    return 0
+  fi
   log "noseyparker scan $target"
   local datastore="$OUT_DIR/.np-datastore"
   noseyparker scan --datastore "$datastore" "$target" >/dev/null 2>&1 || true
@@ -89,6 +98,14 @@ _run_noseyparker() {
 
 _run_gitleaks() {
   local target="$1" subcmd="$2"
+  # Same reasoning as noseyparker above: gitleaks's own --include-paths is a different regex dialect over a
+  # different scan model (working tree pattern match, not confirmed equivalent to trufflehog's git-history
+  # path filter) -- not translated here without being able to verify it actually constrains history the
+  # same way. Fail closed rather than silently exceed a path-restricted repo scope.
+  if [ -n "${INCLUDE_PATHS:-}" ]; then
+    log "gitleaks skipped: scope is path-restricted (--include-paths) and gitleaks cannot be scoped to it here"
+    return 0
+  fi
   log "gitleaks $subcmd $target"
   gitleaks "$subcmd" --source "$target" --report-format json --report-path "$OUT_DIR/gitleaks.json" --redact \
     >/dev/null 2>&1 || true
