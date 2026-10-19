@@ -118,16 +118,22 @@ case "$MODE" in
     JS_DIR="$OUT_DIR/js_bundles"
     mkdir -p "$JS_DIR"
     log "Downloading top 100 JS bundles for offline scanning..."
+    : > "$OUT_DIR/url_map.tsv"   # fname<TAB>original url, so a secret's bundle can be traced back exactly
     head -100 "$JS_LIST" | while IFS= read -r url; do
       [ -z "$url" ] && continue
       fname=$(echo "$url" | tr '/?:&=#' '_' | head -c 200)
+      printf '%s\t%s\n' "$fname.js" "$url" >> "$OUT_DIR/url_map.tsv"
       curl -sk --max-time 10 "$url" -o "$JS_DIR/$fname.js" 2>/dev/null || true
     done
     _have trufflehog  && _run_trufflehog  "$JS_DIR" filesystem
     _have noseyparker && _run_noseyparker "$JS_DIR"
-    # Fallback regex pass — runs even without trufflehog/noseyparker installed
+    # Fallback regex pass — runs even without trufflehog/noseyparker installed. "-h" used to suppress the
+    # filename, so a hit had no way back to which bundle (and therefore which URL, via url_map.tsv above) it
+    # came from -- BBASM's own finding record then had no location at all for this path, only the redacted
+    # match text. Keeping the filename costs nothing here; the caller resolves it to a URL, never prints the
+    # raw secret value anywhere it wouldn't already.
     log "Regex fallback grep over downloaded JS..."
-    grep -rEho '(api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key|bearer)["\s:=]+[a-zA-Z0-9_\-]{20,}' \
+    grep -rEo '(api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key|bearer)["\s:=]+[a-zA-Z0-9_\-]{20,}' \
       "$JS_DIR" | sort -u > "$OUT_DIR/regex_hits.txt" 2>/dev/null || true
     n=$(wc -l < "$OUT_DIR/regex_hits.txt" | tr -d ' ')
     [ "$n" -gt 0 ] && hit "regex: $n potential secret(s) — manual triage required" || ok "regex: clean"
